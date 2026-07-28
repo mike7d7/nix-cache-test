@@ -41,23 +41,31 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
         run: |
+          set -euo pipefail
           mkdir -p "$CACHE_DIR"
-      
+
           BASE_URL="https://github.com/$OWNER/$REPO/releases/download/$RELEASE_TAG"
-      
+          NIXOS_CACHE="https://cache.nixos.org"
+
+          # Full closure of the build output (including the out path itself).
+          mapfile -t closure < <(nix path-info -r .#default)
+
+          # Keep only the paths that cache.nixos.org does NOT already serve.
           paths=()
-      
-          while read -r path; do
-            if ! nix store ping --store https://cache.nixos.org "$path" >/dev/null 2>&1; then
+          for path in "${closure[@]}"; do
+            if nix path-info --store "$NIXOS_CACHE" "$path" >/dev/null 2>&1; then
+              echo "skip  (in cache.nixos.org): $path"
+            else
+              echo "keep  (missing upstream) : $path"
               paths+=("$path")
             fi
-          done < <(nix path-info -r .#default)
-      
+          done
+
           if [ "${#paths[@]}" -eq 0 ]; then
             echo "Everything is already available from cache.nixos.org"
             exit 0
           fi
-      
+
           nix copy \
             --to "file://$PWD/$CACHE_DIR?secret-key=$RUNNER_TEMP/cache-key.pem&url=$BASE_URL" \
             "${paths[@]}"
