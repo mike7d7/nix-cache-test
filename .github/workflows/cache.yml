@@ -33,9 +33,8 @@ jobs:
           chmod 600 "$RUNNER_TEMP/cache-key.pem"
 
       - name: Build
-        run: |
-          nix build .#default
-
+        run: nix build '.#default^*' --print-out-paths > /tmp/output-paths.txt
+        
       - name: Export signed cache
         env:
           OWNER: ${{ github.repository_owner }}
@@ -43,16 +42,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$CACHE_DIR"
-
+      
           BASE_URL="https://github.com/$OWNER/$REPO/releases/download/$RELEASE_TAG"
           NIXOS_CACHE="https://cache.nixos.org"
-
-          # Full closure of the build output (including the out path itself).
-          mapfile -t closure < <(nix path-info -r .#default)
-
-          # Keep only the paths that cache.nixos.org does NOT already serve.
+      
+          # Get the runtime closure of the built outputs
+          mapfile -t closure < <(nix path-info -r $(cat /tmp/output-paths.txt))
+      
           paths=()
           for path in "${closure[@]}"; do
+            # Check if the path is already in cache.nixos.org
             if nix path-info --store "$NIXOS_CACHE" "$path" >/dev/null 2>&1; then
               echo "skip  (in cache.nixos.org): $path"
             else
@@ -60,16 +59,15 @@ jobs:
               paths+=("$path")
             fi
           done
-
+      
           if [ "${#paths[@]}" -eq 0 ]; then
             echo "Everything is already available from cache.nixos.org"
             exit 0
           fi
-
+      
           nix copy \
             --to "file://$PWD/$CACHE_DIR?secret-key=$RUNNER_TEMP/cache-key.pem&url=$BASE_URL" \
             "${paths[@]}"
-
 
       - name: Verify signatures
         run: |
