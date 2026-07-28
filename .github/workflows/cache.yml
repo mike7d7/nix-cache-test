@@ -42,12 +42,26 @@ jobs:
           REPO: ${{ github.event.repository.name }}
         run: |
           mkdir -p "$CACHE_DIR"
-
+      
           BASE_URL="https://github.com/$OWNER/$REPO/releases/download/$RELEASE_TAG"
-
+      
+          paths=()
+      
+          while read -r path; do
+            if ! nix store ping --store https://cache.nixos.org "$path" >/dev/null 2>&1; then
+              paths+=("$path")
+            fi
+          done < <(nix path-info -r .#default)
+      
+          if [ "${#paths[@]}" -eq 0 ]; then
+            echo "Everything is already available from cache.nixos.org"
+            exit 0
+          fi
+      
           nix copy \
             --to "file://$PWD/$CACHE_DIR?secret-key=$RUNNER_TEMP/cache-key.pem&url=$BASE_URL" \
-            $(nix path-info .#default)
+            "${paths[@]}"
+
 
       - name: Verify signatures
         run: |
