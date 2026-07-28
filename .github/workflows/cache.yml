@@ -32,9 +32,9 @@ jobs:
           EOF
           chmod 600 "$RUNNER_TEMP/cache-key.pem"
 
-      - name: Build
+      - name: Build flake
         run: nix build '.#default^*' --print-out-paths > /tmp/output-paths.txt
-        
+
       - name: Export signed cache
         env:
           OWNER: ${{ github.repository_owner }}
@@ -80,13 +80,23 @@ jobs:
           make_latest: false
           draft: false
 
-      - name: Upload NARs
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          overwrite_files: true
-          files: |
-            cache/nar/*
+      - name: Upload NARs (Sequential with Retries)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          
+          for nar in cache/nar/*; do
+            echo "Uploading $nar..."
+            for i in 1 2 3 4 5; do
+              if gh release upload "$RELEASE_TAG" "$nar" --clobber; then
+                break
+              fi
+              echo "Rate limited or failed. Retrying in $((i*15)) seconds..."
+              sleep $((i*15))
+            done
+          done
 
       - name: Prepare Pages
         run: |
