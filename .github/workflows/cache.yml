@@ -1,0 +1,95 @@
+name: Publish Nix Binary Cache
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build-cache:
+    runs-on: ubuntu-latest
+
+    env:
+      CACHE_DIR: cache
+      RELEASE_TAG: binary-cache
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Write signing key
+        run: |
+          cat > "$RUNNER_TEMP/cache-key.pem" <<'EOF'
+          ${{ secrets.NIX_CACHE_PRIVATE_KEY }}
+          EOF
+          chmod 600 "$RUNNER_TEMP/cache-key.pem"
+
+      - name: Build
+        run: |
+          nix build .#default
+
+      - name: Export signed cache
+        env:
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+        run: |
+          mkdir -p "$CACHE_DIR"
+
+          BASE_URL="https://github.com/$OWNER/$REPO/releases/download/$RELEASE_TAG"
+
+          nix copy \
+            --to "file://$PWD/$CACHE_DIR?secret-key=$RUNNER_TEMP/cache-key.pem&url=$BASE_URL" \
+            $(nix path-info .#default)
+
+      - name: Verify signatures
+        run: |
+          grep '^Sig:' cache/*.narinfo
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          make_latest: false
+          draft: false
+
+      - name: Upload NARs
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          overwrite_files: true
+          files: |
+            cache/nar/*
+
+      - name: Prepare Pages
+        run: |
+          mkdir -p pages
+          cp cache/*.narinfo pages/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages
+
+  deploy:
+    needs: build-cache
+
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    permissions:
+      pages: write
+      id-token: write
+
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
