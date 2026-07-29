@@ -8,8 +8,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   build-cache:
@@ -36,14 +34,10 @@ jobs:
         run: nix build '.#default^*' --print-out-paths > /tmp/output-paths.txt
 
       - name: Export signed cache
-        env:
-          OWNER: ${{ github.repository_owner }}
-          REPO: ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
           mkdir -p "$CACHE_DIR"
       
-          BASE_URL="https://github.com/$OWNER/$REPO/releases/download/$RELEASE_TAG"
           NIXOS_CACHE="https://cache.nixos.org"
       
           # Get the runtime closure of the built outputs
@@ -66,18 +60,15 @@ jobs:
           fi
       
           nix copy \
-            --to "file://$PWD/$CACHE_DIR?secret-key=$RUNNER_TEMP/cache-key.pem&url=$BASE_URL" \
+            --to "file://$PWD/$CACHE_DIR?secret-key=$RUNNER_TEMP/cache-key.pem" \
             "${paths[@]}"
 
           # GitHub Releases flattens directory structures, so we must rewrite the URL
-          # in the .narinfo files to point to the absolute URL without the 'nar/' subdirectory.
+          # in the .narinfo files to point directly to the filename without the 'nar/' prefix.
           for narinfo in "$CACHE_DIR"/*.narinfo; do
-            # Extract the NAR filename (e.g., 1kfqc7...nar.xz)
             nar_file=$(grep '^URL:' "$narinfo" | cut -d' ' -f2)
             nar_basename=$(basename "$nar_file")
-            
-            # Overwrite the URL field with the absolute GitHub Releases URL
-            sed -i "s|^URL:.*|URL: $BASE_URL/$nar_basename|" "$narinfo"
+            sed -i "s|^URL:.*|URL: $nar_basename|" "$narinfo"
           done
 
       - name: Verify signatures
@@ -91,48 +82,21 @@ jobs:
           make_latest: false
           draft: false
 
-      - name: Upload NARs (Sequential with Retries)
+      - name: Upload Cache Files (Sequential with Retries)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           shopt -s nullglob
           
-          for nar in cache/nar/*; do
-            echo "Uploading $nar..."
+          # Upload nix-cache-info, all .narinfo files, and all NARs sequentially
+          for f in "$CACHE_DIR"/nix-cache-info "$CACHE_DIR"/*.narinfo "$CACHE_DIR"/nar/*; do
+            echo "Uploading $f..."
             for i in 1 2 3 4 5; do
-              if gh release upload "$RELEASE_TAG" "$nar" --clobber; then
+              if gh release upload "$RELEASE_TAG" "$f" --clobber; then
                 break
               fi
               echo "Rate limited or failed. Retrying in $((i*15)) seconds..."
               sleep $((i*15))
             done
           done
-
-      - name: Prepare Pages
-        run: |
-          mkdir -p pages
-          # nix-cache-info is REQUIRED at the root of the cache
-          cp cache/nix-cache-info pages/ || true
-          cp cache/*.narinfo pages/ || true
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: pages
-
-  deploy:
-    needs: build-cache
-
-    runs-on: ubuntu-latest
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-
-    permissions:
-      pages: write
-      id-token: write
-
-    steps:
-      - id: deploy
-        uses: actions/deploy-pages@v4
