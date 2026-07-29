@@ -33,7 +33,9 @@ jobs:
           chmod 600 "$RUNNER_TEMP/cache-key.pem"
 
       - name: Build flake
-        run: nix build '.#default^*' --print-out-paths > /tmp/output-paths.txt
+        # Note: Changed from '^*' to just '.#default' to avoid pulling in 'dev' dependencies.
+        # If you truly need all outputs, you can change it back to '.#default^*'.
+        run: nix build '.#default' --print-out-paths > /tmp/output-paths.txt
 
       - name: Export signed cache
         env:
@@ -65,13 +67,12 @@ jobs:
             exit 0
           fi
       
-          # 1. Copy to local directory (do not pass url= here to keep URLs relative initially)
+          # 1. Copy to local directory
           nix copy \
             --to "file://$PWD/$CACHE_DIR?secret-key=$RUNNER_TEMP/cache-key.pem" \
             "${paths[@]}"
 
           # 2. Rewrite the URL: field in .narinfo files to point to GitHub Releases
-          # Nix writes "URL: nar/123.nar.xz". We change it to "URL: https://github.com/.../123.nar.xz"
           for narinfo in "$CACHE_DIR"/*.narinfo; do
             nar_filename=$(awk '/^URL:/ {print $2}' "$narinfo" | xargs basename)
             sed "s|^URL:.*|URL: $BASE_URL/$nar_filename|" "$narinfo" > "$narinfo.tmp"
@@ -88,6 +89,19 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           make_latest: false
           draft: false
+
+      - name: Clean previous release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get all existing asset names in the release
+          assets=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' 2>/dev/null || true)
+          if [ -n "$assets" ]; then
+            echo "Deleting old assets to prevent hitting the 1000 file limit..."
+            for asset in $assets; do
+              gh release delete-asset "$RELEASE_TAG" "$asset" --yes
+            done
+          fi
 
       - name: Upload NARs to Releases (Sequential with Retries)
         env:
