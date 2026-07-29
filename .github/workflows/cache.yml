@@ -72,11 +72,18 @@ jobs:
             --to "file://$PWD/$CACHE_DIR?secret-key=$RUNNER_TEMP/cache-key.pem" \
             "${paths[@]}"
 
-          # 2. Rewrite the URL: field in .narinfo files to point to GitHub Releases
+          # 2. Robustly rewrite the URL: field to absolute GitHub Releases URLs
+          echo "Rewriting .narinfo URLs to point to GitHub Releases..."
           for narinfo in "$CACHE_DIR"/*.narinfo; do
-            nar_filename=$(awk '/^URL:/ {print $2}' "$narinfo" | xargs basename)
-            sed "s|^URL:.*|URL: $BASE_URL/$nar_filename|" "$narinfo" > "$narinfo.tmp"
-            mv "$narinfo.tmp" "$narinfo"
+            # Extract the NAR filename (e.g. 08rz4...nar.xz)
+            nar_path=$(grep '^URL:' "$narinfo" | cut -d' ' -f2)
+            nar_filename=$(basename "$nar_path")
+            
+            # Overwrite the URL line with the absolute GitHub Releases URL
+            sed -i "s|^URL:.*|URL: $BASE_URL/$nar_filename|" "$narinfo"
+            
+            # Print the result to the CI logs so we can prove it worked
+            echo "  - $(basename "$narinfo") -> $BASE_URL/$nar_filename"
           done
 
       - name: Verify signatures
