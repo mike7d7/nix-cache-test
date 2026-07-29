@@ -69,6 +69,12 @@ jobs:
             --to "file://$PWD/$CACHE_DIR?secret-key=$RUNNER_TEMP/cache-key.pem&url=$BASE_URL" \
             "${paths[@]}"
 
+          # Nix sometimes writes relative URLs (e.g., 'URL: nar/...') instead of absolute ones.
+          # We must manually rewrite them so Nix knows to fetch the NARs from GitHub Releases.
+          for narinfo in "$CACHE_DIR"/*.narinfo; do
+            sed -i "s|^URL: nar/|URL: $BASE_URL/nar/|" "$narinfo"
+          done
+
       - name: Verify signatures
         run: |
           grep '^Sig:' cache/*.narinfo
