@@ -3,12 +3,12 @@ name: Build and Cache
 on:
   push:
     branches:
-      - main # Change this to your default branch
+      - main
 
 permissions:
-  contents: write # Required for GitHub Releases
-  id-token: write # Required for GitHub Pages
-  pages: write    # Required for GitHub Pages
+  contents: write
+  id-token: write
+  pages: write
 
 jobs:
   build:
@@ -25,7 +25,6 @@ jobs:
             experimental-features = nix-command flakes
 
       - name: Build Nix flake
-        # Replace .#default with your specific package if needed
         run: nix build .#default --out-link result
 
       - name: Export and sign Nix store paths
@@ -33,77 +32,58 @@ jobs:
           NIX_PRIVATE_KEY: ${{ secrets.NIX_CACHE_PRIVATE_KEY }}
         run: |
           echo "$NIX_PRIVATE_KEY" > cache-key.pem
-          
-          # Get all requisites (the entire dependency tree) of the build result
           STORE_PATHS=$(nix-store --query --requisites ./result)
-          
-          # Export the cache to a temporary directory
           nix copy \
             --to "file://$PWD/cache?secret-key=$PWD/cache-key.pem" \
             $STORE_PATHS
-          
           rm cache-key.pem
 
       - name: Separate .narinfo (Pages) and .nar (Releases)
         run: |
           mkdir -p pages-dir release-dir
           
-          # Debug: See exactly what nix copy generated
-          echo "=== Cache Directory Structure ==="
-          find cache -type f
-          echo "================================="
-          
-          # 1. Move nix-cache-info to the Pages directory
-          if [ -f cache/nix-cache-info ]; then
-            mv cache/nix-cache-info pages-dir/
-          fi
+          # 1. Move nix-cache-info
+          [ -f cache/nix-cache-info ] && mv cache/nix-cache-info pages-dir/
           
           # 2. Define the GitHub Release download URL
           RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/nix-cache"
           
-          # 3. Process .narinfo files: rewrite the URL and move to Pages directory
+          # 3. Process .narinfo files with a single, robust sed command
           shopt -s nullglob
           for narinfo in cache/*.narinfo; do
-            # Extract the NAR filename from the URL field (e.g., nar/abc.nar.xz -> abc.nar.xz)
-            NAR_FILE=$(grep '^URL:' "$narinfo" | awk '{print $2}')
-            # Remove any leading "nar/" prefix if it exists
-            NAR_FILE=${NAR_FILE#nar/}
-            # Rewrite the URL to point to the GitHub Release
-            sed -i "s|^URL:.*|URL: ${RELEASE_URL}/${NAR_FILE}|g" "$narinfo"
+            # This directly replaces "URL: nar/" with the release URL.
+            # It doesn't matter what the filename is; it keeps it intact.
+            sed -i "s|URL: nar/|URL: ${RELEASE_URL}/|g" "$narinfo"
+            
+            # Debug: Ensure the rewrite worked
+            if grep -q "URL: nar/" "$narinfo"; then
+              echo "ERROR: Failed to rewrite URL in $narinfo"
+              cat "$narinfo"
+              exit 1
+            fi
+            
             mv "$narinfo" pages-dir/
           done
           
           # 4. Move the actual .nar binaries to the Release directory
-          # Using 'find' is robust against .nar, .nar.xz extensions, and missing nar/ subdirectories
           find cache/ -type f ! -name "*.narinfo" ! -name "nix-cache-info" -exec mv {} release-dir/ \;
-          
-          # Debugging: Show what ended up where
-          echo "Pages dir contents:"
-          ls -la pages-dir
-          echo "Release dir contents:"
-          ls -la release-dir
 
       - name: Delete previous cache release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Delete the existing release so we don't hit storage limits with stale NARs
           gh release delete nix-cache --yes --cleanup-tag || true
 
       - name: Create new release and upload .nar files
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Create a new release with the tag 'nix-cache'
           gh release create nix-cache \
             --title "Nix Binary Cache" \
             --notes "Automated Nix binary cache binaries"
             
-          # Upload all .nar files as release assets
           if [ -n "$(ls -A release-dir)" ]; then
             gh release upload nix-cache release-dir/* --clobber
-          else
-            echo "No .nar files generated to upload."
           fi
 
       - name: Setup Pages
