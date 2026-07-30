@@ -8,8 +8,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   build-cache:
@@ -33,19 +31,15 @@ jobs:
           chmod 600 "$RUNNER_TEMP/cache-key.pem"
 
       - name: Build flake
-        # Note: Changed from '^*' to just '.#default' to avoid pulling in 'dev' dependencies.
-        # If you truly need all outputs, you can change it back to '.#default^*'.
+        # Changed to '.#default' to skip 'dev' dependencies like clang-wrapper.
+        # This prevents hitting GitHub's 1000 asset limit.
         run: nix build '.#default' --print-out-paths > /tmp/output-paths.txt
 
       - name: Export signed cache
-        env:
-          OWNER: ${{ github.repository_owner }}
-          REPO: ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
           mkdir -p "$CACHE_DIR"
       
-          BASE_URL="https://github.com/$OWNER/$REPO/releases/download/$RELEASE_TAG"
           NIXOS_CACHE="https://cache.nixos.org"
       
           # Get the runtime closure of the built outputs
@@ -67,23 +61,16 @@ jobs:
             exit 0
           fi
       
-          # 1. Copy to local directory
+          # Copy to local directory
           nix copy \
             --to "file://$PWD/$CACHE_DIR?secret-key=$RUNNER_TEMP/cache-key.pem" \
             "${paths[@]}"
 
-          # 2. Robustly rewrite the URL: field to absolute GitHub Releases URLs
-          echo "Rewriting .narinfo URLs to point to GitHub Releases..."
+          # GitHub Releases flattens directories, so we must strip the 'nar/' prefix 
+          # from the URL field in the .narinfo files.
+          # This turns 'URL: nar/123.nar.xz' into 'URL: 123.nar.xz'
           for narinfo in "$CACHE_DIR"/*.narinfo; do
-            # Extract the NAR filename (e.g. 08rz4...nar.xz)
-            nar_path=$(grep '^URL:' "$narinfo" | cut -d' ' -f2)
-            nar_filename=$(basename "$nar_path")
-            
-            # Overwrite the URL line with the absolute GitHub Releases URL
-            sed -i "s|^URL:.*|URL: $BASE_URL/$nar_filename|" "$narinfo"
-            
-            # Print the result to the CI logs so we can prove it worked
-            echo "  - $(basename "$narinfo") -> $BASE_URL/$nar_filename"
+            sed -i 's|^URL: nar/|URL: |' "$narinfo"
           done
 
       - name: Verify signatures
@@ -101,7 +88,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Get all existing asset names in the release
           assets=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' 2>/dev/null || true)
           if [ -n "$assets" ]; then
             echo "Deleting old assets to prevent hitting the 1000 file limit..."
@@ -110,49 +96,21 @@ jobs:
             done
           fi
 
-      - name: Upload NARs to Releases (Sequential with Retries)
+      - name: Upload Cache to Releases (Sequential with Retries)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           shopt -s nullglob
           
-          # Only upload the large .nar files to GitHub Releases
-          for nar in "$CACHE_DIR"/nar/*; do
-            echo "Uploading $nar..."
+          # Upload nix-cache-info, all .narinfo files, and all NARs sequentially
+          for f in "$CACHE_DIR"/nix-cache-info "$CACHE_DIR"/*.narinfo "$CACHE_DIR"/nar/*; do
+            echo "Uploading $f..."
             for i in 1 2 3 4 5; do
-              if gh release upload "$RELEASE_TAG" "$nar" --clobber; then
+              if gh release upload "$RELEASE_TAG" "$f" --clobber; then
                 break
               fi
               echo "Rate limited or failed. Retrying in $((i*15)) seconds..."
               sleep $((i*15))
             done
           done
-
-      - name: Prepare Pages
-        run: |
-          mkdir -p pages
-          # Only upload info files to GitHub Pages
-          cp "$CACHE_DIR"/nix-cache-info pages/ || true
-          cp "$CACHE_DIR"/*.narinfo pages/ || true
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: pages
-
-  deploy:
-    needs: build-cache
-
-    runs-on: ubuntu-latest
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-
-    permissions:
-      pages: write
-      id-token: write
-
-    steps:
-      - id: deploy
-        uses: actions/deploy-pages@v4
