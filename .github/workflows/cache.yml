@@ -10,12 +10,11 @@ permissions:
   contents: write
 
 jobs:
-  build-cache:
+  publish-cache:
     runs-on: ubuntu-latest
 
     env:
       CACHE_DIR: cache
-      RELEASE_TAG: binary-cache
 
     steps:
       - uses: actions/checkout@v4
@@ -25,92 +24,50 @@ jobs:
 
       - name: Write signing key
         run: |
-          cat > "$RUNNER_TEMP/cache-key.pem" <<'EOF'
-          ${{ secrets.NIX_CACHE_PRIVATE_KEY }}
-          EOF
-          chmod 600 "$RUNNER_TEMP/cache-key.pem"
+          echo "${{ secrets.NIX_CACHE_PRIVATE_KEY }}" > $RUNNER_TEMP/cache-key.pem
+          chmod 600 $RUNNER_TEMP/cache-key.pem
 
-      - name: Build flake
-        # Changed to '.#default' to skip 'dev' dependencies like clang-wrapper.
-        # This prevents hitting GitHub's 1000 asset limit.
-        run: nix build '.#default' --print-out-paths > /tmp/output-paths.txt
-
-      - name: Export signed cache
+      - name: Build and Export Cache
         run: |
           set -euo pipefail
           mkdir -p "$CACHE_DIR"
-      
-          NIXOS_CACHE="https://cache.nixos.org"
-      
-          # Get the runtime closure of the built outputs
+
+          # 1. Build ONLY the default output. 
+          # This avoids pulling in 'dev' dependencies like clang-wrapper.
+          nix build '.#default' --print-out-paths > /tmp/output-paths.txt
+
+          # 2. Get the runtime closure
           mapfile -t closure < <(nix path-info -r $(cat /tmp/output-paths.txt))
-      
+
+          # 3. Filter out paths already in cache.nixos.org
           paths=()
           for path in "${closure[@]}"; do
-            # Check if the path is already in cache.nixos.org
-            if nix path-info --store "$NIXOS_CACHE" "$path" >/dev/null 2>&1; then
+            if nix path-info --store "https://cache.nixos.org" "$path" >/dev/null 2>&1; then
               echo "skip  (in cache.nixos.org): $path"
             else
               echo "keep  (missing upstream) : $path"
               paths+=("$path")
             fi
           done
-      
+
           if [ "${#paths[@]}" -eq 0 ]; then
             echo "Everything is already available from cache.nixos.org"
             exit 0
           fi
-      
-          # Copy to local directory
+
+          # 4. Export to local directory. 
+          # No URL rewriting needed! Relative URLs work perfectly on GitHub Pages.
           nix copy \
             --to "file://$PWD/$CACHE_DIR?secret-key=$RUNNER_TEMP/cache-key.pem" \
             "${paths[@]}"
 
-          # GitHub Releases flattens directories, so we must strip the 'nar/' prefix 
-          # from the URL field in the .narinfo files.
-          # This turns 'URL: nar/123.nar.xz' into 'URL: 123.nar.xz'
-          for narinfo in "$CACHE_DIR"/*.narinfo; do
-            sed -i 's|^URL: nar/|URL: |' "$narinfo"
-          done
+          # 5. Verify signatures
+          grep '^Sig:' "$CACHE_DIR"/*.narinfo
 
-      - name: Verify signatures
-        run: |
-          grep '^Sig:' cache/*.narinfo
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          make_latest: false
-          draft: false
-
-      - name: Clean previous release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          assets=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' 2>/dev/null || true)
-          if [ -n "$assets" ]; then
-            echo "Deleting old assets to prevent hitting the 1000 file limit..."
-            for asset in $assets; do
-              gh release delete-asset "$RELEASE_TAG" "$asset" --yes
-            done
-          fi
-
-      - name: Upload Cache to Releases (Sequential with Retries)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          
-          # Upload nix-cache-info, all .narinfo files, and all NARs sequentially
-          for f in "$CACHE_DIR"/nix-cache-info "$CACHE_DIR"/*.narinfo "$CACHE_DIR"/nar/*; do
-            echo "Uploading $f..."
-            for i in 1 2 3 4 5; do
-              if gh release upload "$RELEASE_TAG" "$f" --clobber; then
-                break
-              fi
-              echo "Rate limited or failed. Retrying in $((i*15)) seconds..."
-              sleep $((i*15))
-            done
-          done
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./cache
+          publish_branch: gh-pages
+          # keep_files: true # Uncomment if you want to keep old cache files instead of overwriting
