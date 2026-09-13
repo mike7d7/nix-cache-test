@@ -14,6 +14,9 @@
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = import nixpkgs {
         inherit system;
+        config.permittedInsecurePackages = [
+          "electron-41.10.6"
+        ];
       };
 
       RStudio-with-my-packages = pkgs.rstudioWrapper.override {
