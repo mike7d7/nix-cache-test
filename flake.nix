@@ -24,6 +24,7 @@
           ggplot2
           dplyr
           fda
+          lhs
           tidyr
           zoo
         ];
