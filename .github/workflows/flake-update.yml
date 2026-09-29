@@ -12,6 +12,7 @@ jobs:
       id-token: write
       issues: write
       pull-requests: write
+      actions: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
