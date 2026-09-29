@@ -22,8 +22,9 @@ jobs:
           pr-title: "Update Nix flake inputs"
           pr-labels: |
             dependencies
-            automated
       - if: success() && steps.update.outputs.pull-request-number != ''
-        run: gh pr merge --auto --merge ${{ steps.update.outputs.pull-request-number }}
+        run: |
+          gh pr merge --merge --delete-branch ${{ steps.update.outputs.pull-request-number }}
+          gh workflow run cache.yml --ref main
         env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
