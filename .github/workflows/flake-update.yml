@@ -12,7 +12,6 @@ jobs:
       id-token: write
       issues: write
       pull-requests: write
-      actions: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -23,9 +22,8 @@ jobs:
           pr-title: "Update Nix flake inputs"
           pr-labels: |
             dependencies
+            automated
       - if: success() && steps.update.outputs.pull-request-number != ''
-        run: |
-          gh pr merge --merge --delete-branch ${{ steps.update.outputs.pull-request-number }}
-          gh workflow run cache.yml --ref main
+        run: gh pr merge --auto --merge ${{ steps.update.outputs.pull-request-number }}
         env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
